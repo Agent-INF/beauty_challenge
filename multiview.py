@@ -93,6 +93,7 @@ class Network(object):
       if not self._full_weight_path:
         self._load_weights(self.view1_model, self._view1_weight_path, name=view_names[0])
       self._rename_model_layers(self.view1_model, view_names[0])
+      view1 = self.view1_model(self.image_input)
 
       self.view2_model = self._nets(
         include_top=True,
@@ -102,7 +103,9 @@ class Network(object):
       if not self._full_weight_path:
         self._load_weights(self.view2_model, self._view2_weight_path, name=view_names[1])
       self._rename_model_layers(self.view2_model, view_names[1])
+      view2 = self.view2_model(self.image_input)
 
+    with tf.device('/gpu:1'):
       self.view3_model = self._nets(
         include_top=True,
         input_shape=input_shape,
@@ -111,13 +114,10 @@ class Network(object):
       if not self._full_weight_path:
         self._load_weights(self.view3_model, self._view3_weight_path, name=view_names[2])
       self._rename_model_layers(self.view3_model, view_names[2])
-
-      view1 = self.view1_model(self.image_input)
-      view2 = self.view2_model(self.image_input)
       view3 = self.view3_model(self.image_input)
+
       view_concat = Concatenate(axis=-1, name='view_concat')([view1, view2, view3])
 
-    with tf.device('/gpu:1'):
       self.pre_aggregation_model = self._resnet50_stage5_model(
         name='pre_aggregation', input_shape=int_shape(view_concat)[1:])
       pre_aggregation = self.pre_aggregation_model(view_concat)
