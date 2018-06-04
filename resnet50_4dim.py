@@ -13,21 +13,19 @@ import warnings
 
 from keras import backend as K
 from keras import layers, regularizers
+# from keras.utils import layer_utils
 #from keras.utils.data_utils import get_file
 #from utils import decode_predictions
 #from utils import preprocess_input
-# from utils import _obtain_input_shape
-from keras.applications.imagenet_utils import _obtain_input_shape
+# from keras.applications.imagenet_utils import _obtain_input_shape
 from keras.engine.topology import get_source_inputs
-from keras.layers import (Activation, AveragePooling2D, BatchNormalization,
-                          Concatenate)
+from keras.layers import Activation, AveragePooling2D, BatchNormalization
 from keras.layers import Conv2D as Conv2DOrg
 from keras.layers import Dense as DenseOrg
 from keras.layers import (Dropout, Flatten, GlobalAveragePooling2D,
                           GlobalMaxPooling2D, Input, MaxPooling2D,
                           ZeroPadding2D)
 from keras.models import Model
-from keras.utils import layer_utils
 
 WEIGHTS_PATH = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.2/resnet50_weights_tf_dim_ordering_tf_kernels.h5'
 WEIGHTS_PATH_NO_TOP = 'https://github.com/fchollet/deep-learning-models/releases/download/v0.2/resnet50_weights_tf_dim_ordering_tf_kernels_notop.h5'
@@ -177,13 +175,13 @@ def conv_block(input_tensor, kernel_size, filters, stage, block, strides=(2, 2))
 
 def ResNet50(include_top=True,
              weights='imagenet',
-             input_tensor1=None,
-             input_tensor2=None,
-             input_shape1=None,
-             input_shape2=None,
+             input_tensor=None,
+             input_shape=None,
              pooling=None,
              classes=1000,
-             drop_rate=0.5):
+             drop_rate=0,
+             get_feature_stage=0,
+             name='resnet50'):
   """Instantiates the ResNet50 architecture.
 
   Optionally loads weights pre-trained
@@ -243,45 +241,58 @@ def ResNet50(include_top=True,
   #                     ' as true, `classes` should be 1000')
 
   # Determine proper input shape
-  if input_tensor1 is None:
-    img_input = Input(shape=input_shape1)
-  else:
-    if not K.is_keras_tensor(input_tensor1):
-      img_input = Input(tensor=input_tensor1, shape=input_shape1)
-    else:
-      img_input = input_tensor1
-  if input_tensor2 is None:
-    hm_input = Input(shape=input_shape2)
-  else:
-    if not K.is_keras_tensor(input_tensor2):
-      hm_input = Input(tensor=input_tensor2, shape=input_shape2)
-    else:
-      hm_input = input_tensor2
+  # input_shape = _obtain_input_shape(
+  #   input_shape,
+  #   default_size=224,
+  #   min_size=197,
+  #   data_format=K.image_data_format(),
+  #   include_top=include_top)
 
+  if input_tensor is None:
+    img_input = Input(shape=input_shape)
+  else:
+    if not K.is_keras_tensor(input_tensor):
+      img_input = Input(tensor=input_tensor, shape=input_shape)
+    else:
+      img_input = input_tensor
   if K.image_data_format() == 'channels_last':
     bn_axis = 3
   else:
     bn_axis = 1
 
-  x = Concatenate()([img_input, hm_input])
+  # Ensure that the model takes into account
+  # any potential predecessors of `input_tensor`.
+  if input_tensor is not None:
+    inputs = get_source_inputs(input_tensor)
+  else:
+    inputs = img_input
 
-  x = ZeroPadding2D((3, 3))(x)
+  x = ZeroPadding2D((3, 3))(img_input)
   x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1_alt')(x)
   x = BatchNormalization(axis=bn_axis, name='bn_conv1')(x)
   x = Activation('relu')(x)
   x = MaxPooling2D((3, 3), strides=(2, 2))(x)
   # model.layers[:6]
+  if get_feature_stage == 1:
+    model = Model(inputs, x, name=name)
+    return model
 
   x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1))
   x = identity_block(x, 3, [64, 64, 256], stage=2, block='b')
   x = identity_block(x, 3, [64, 64, 256], stage=2, block='c')
   # model.layers[:38]
+  if get_feature_stage == 2:
+    model = Model(inputs, x, name=name)
+    return model
 
   x = conv_block(x, 3, [128, 128, 512], stage=3, block='a')
   x = identity_block(x, 3, [128, 128, 512], stage=3, block='b')
   x = identity_block(x, 3, [128, 128, 512], stage=3, block='c')
   x = identity_block(x, 3, [128, 128, 512], stage=3, block='d')
   # model.layers[:80]
+  if get_feature_stage == 3:
+    model = Model(inputs, x, name=name)
+    return model
 
   x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a')
   x = identity_block(x, 3, [256, 256, 1024], stage=4, block='b')
@@ -290,11 +301,16 @@ def ResNet50(include_top=True,
   x = identity_block(x, 3, [256, 256, 1024], stage=4, block='e')
   x = identity_block(x, 3, [256, 256, 1024], stage=4, block='f')
   # model.layers[:142]
+  if get_feature_stage == 4:
+    model = Model(inputs, x, name=name)
+    return model
 
   x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a')
   x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b')
   x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c')
-
+  if get_feature_stage == 5:
+    model = Model(inputs, x, name=name)
+    return model
   x = AveragePooling2D((7, 7), name='avg_pool')(x)
   # model.layers[:175]
 
@@ -310,17 +326,7 @@ def ResNet50(include_top=True,
     elif pooling == 'max':
       x = GlobalMaxPooling2D()(x)
 
-  # Ensure that the model takes into account
-  # any potential predecessors of `input_tensor`.
-  if input_tensor1 is not None:
-    input1 = get_source_inputs(input_tensor1)
-  else:
-    input1 = img_input
-  if input_tensor2 is not None:
-    input2 = get_source_inputs(input_tensor2)
-  else:
-    input2 = hm_input
-  # Create model.
-  model = Model([input1, input2], x, name='resnet50')
 
+# Create model.
+  model = Model(inputs, x, name=name)
   return model
