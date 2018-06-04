@@ -15,7 +15,7 @@ from PIL import Image as pil_image
 
 from keras.preprocessing.image import load_img, img_to_array, flip_axis, apply_transform, transform_matrix_offset_center, random_brightness, _iter_valid_files, _count_valid_files_in_directory, _list_valid_filenames_in_directory
 
-def read_image_from_folder(directory):
+def read_image_from_folder(directory, split):
     """
     Return   (sample count, file names, classes(in shape(file names,)), class indicies(map label to index))
     """
@@ -35,7 +35,7 @@ def read_image_from_folder(directory):
     function_partial = partial(_count_valid_files_in_directory,
                                 white_list_formats=white_list_formats,
                                 follow_links=False,
-                                split=None)
+                                split=split)
     samples = sum(pool.map(function_partial,
                                 (os.path.join(directory, subdir)
                                     for subdir in label_names)))
@@ -50,7 +50,7 @@ def read_image_from_folder(directory):
     i = 0
     for dirpath in (os.path.join(directory, subdir) for subdir in label_names):
         results.append(pool.apply_async(_list_valid_filenames_in_directory,
-                                        (dirpath, white_list_formats, None,
+                                        (dirpath, white_list_formats, split,
                                             class_indices, False)))
 
     classes = np.zeros((samples,), dtype='int32')
@@ -75,6 +75,7 @@ def random_transform(
     width_shift_range,
     shear_range,
     brightness_range,
+    fill_mode = 'nearest',
     seed=None):
     """Randomly augment a single image tensor.
 
@@ -146,9 +147,9 @@ def random_transform(
         h, w = x.shape[0], x.shape[1]
         transform_matrix = transform_matrix_offset_center(transform_matrix, h, w)
         x = apply_transform(x, transform_matrix, 2,
-                            fill_mode='nearest')
+                            fill_mode=fill_mode)
         attentionmap = apply_transform(attentionmap, transform_matrix, 2,
-                            fill_mode='nearest')
+                            fill_mode=fill_mode)
         
     if horizontal_flip:
         if np.random.random() < 0.5:
@@ -169,7 +170,7 @@ class ImageDataGeneratorWithAttention():
     """Iterator specially made for this
     Return (batch, x, attention, label)
     """
-    def __init__(self, trainfolder, attentionfolder, 
+    def __init__(self,
         rotation_range=5.0,
         width_shift_range=0.2,
         height_shift_range=0.2,
@@ -177,20 +178,9 @@ class ImageDataGeneratorWithAttention():
         fill_mode='wrap',
         horizontal_flip=True,
         vertical_flip=True,
-        batch_size = 32, 
-        interpolation = 'bilinear'
+        validation_split = 0.05
         ):
-        self.train_folder = trainfolder
-        self.attention_folder = attentionfolder
 
-        (train_count, train_filenames, train_labels, class_indicies) = read_image_from_folder(trainfolder)
-
-        self.num_classes = len(class_indicies)
-        self.img_count = train_count
-        self.train_filenames = train_filenames
-        self.train_labels = train_labels
-        self.index_array = np.random.permutation(self.img_count)
-        
         self.rotation_range = rotation_range
         self.width_shift_range = width_shift_range
         self.height_shift_range = height_shift_range
@@ -198,21 +188,40 @@ class ImageDataGeneratorWithAttention():
         self.fill_mode = fill_mode
         self.horizontal_flip = horizontal_flip
         self.vertical_flip = vertical_flip
-        self.batch_size = batch_size
-        self.interpolation = interpolation
+        self.validation_split = validation_split
 
-    def flow(self):
+    def flow(self, trainfolder, attentionfolder, target_size = (224,224), batch_size = 32, interpolation = 'bilinear', subset = 'training'):
+        
+        if subset is not None:
+            validation_split = self.validation_split
+            if subset == 'validation':
+                split = (0, validation_split)
+            elif subset == 'training':
+                split = (validation_split, 1)
+            else:
+                raise ValueError('Invalid subset name: ', subset,
+                                 '; expected "training" or "validation"')
+        else:
+            split = None
+
+        (train_count, train_filenames, train_labels, class_indicies) = read_image_from_folder(trainfolder, split)
+        self.num_classes = len(class_indicies)
+        self.img_count = train_count
+        self.train_filenames = train_filenames
+        self.train_labels = train_labels
+        self.index_array = np.random.permutation(self.img_count)
+
         current_index = 0
         while True:
         
             start_index = current_index
-            end_index = start_index + self.batch_size
+            end_index = start_index + batch_size
             end_index = min(end_index, self.img_count)
             count = end_index - start_index
             current_index = end_index
 
-            batch_x = np.zeros((count, 224, 224, 3,))
-            batch_a = np.zeros((count, 224, 224, 1,))
+            batch_x = np.zeros((count, target_size[0], target_size[1], 3,))
+            batch_a = np.zeros((count, target_size[0], target_size[1], 1,))
 
             if count == 0:
                 self.index_array = np.random.permutation(self.img_count)
@@ -225,17 +234,17 @@ class ImageDataGeneratorWithAttention():
                 from PIL import ImageFile
                 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-                img = load_img(os.path.join(self.train_folder, self.train_filenames[j]),
+                img = load_img(os.path.join(trainfolder, self.train_filenames[j]),
                     grayscale=False,
-                    target_size=(224,224),
-                    interpolation=self.interpolation)
+                    target_size=target_size,
+                    interpolation = interpolation)
                 
                 attention_file_name = os.path.splitext(self.train_filenames[j])[0]
                 
-                attention_img = load_img(os.path.join(self.attention_folder, attention_file_name + '.png'),
+                attention_img = load_img(os.path.join(attentionfolder, attention_file_name + '.png'),
                     grayscale=True,
-                    target_size=(224,224),
-                    interpolation=self.interpolation)
+                    target_size=target_size,
+                    interpolation = interpolation)
             
                 x = img_to_array(img)
                 attention = img_to_array(attention_img)
@@ -246,7 +255,9 @@ class ImageDataGeneratorWithAttention():
                     self.height_shift_range, 
                     self.width_shift_range, 
                     0.0, 
-                    self.brightness_range)
+                    self.brightness_range,
+                    self.fill_mode
+                    )
 
                 x = (x - 127.5) / 127.5
 
@@ -269,13 +280,10 @@ class ImageDataGeneratorWithAttention():
 
 """
 #Test if it works.
-test = ImageDataGeneratorWithAttention(
-    './data/train',
-    './data/attention'
-)
+test = ImageDataGeneratorWithAttention()
 import matplotlib.pyplot as plt
 
-for ([batch_x, batch_a], batch_y) in test.flow():
+for ([batch_x, batch_a], batch_y) in test.flow('./data/train','./data/attention'):
     for t in range(batch_x.shape[0]):
         print(batch_y[t])
         plt.imshow(batch_x[t,...].astype(np.uint8))
