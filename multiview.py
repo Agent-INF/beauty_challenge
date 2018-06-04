@@ -12,8 +12,11 @@ from keras.preprocessing.image import ImageDataGenerator
 from keras.utils.data_utils import get_file
 
 from resnet50 import conv_block, identity_block
+from resnet50_4dim import ResNet50 as ResNet50_4dim
 from utils import (IMG_CHANNEL, IMG_HEIGHT, IMG_WIDTH, get_nets, get_optimizer,
                    normalize, str2bool)
+
+from custom_image_generator import ImageDataGeneratorWithAttention
 
 URL_PREFIX = 'https://github.com/fchollet/deep-learning-models/releases/download/'
 MODEL_VERSION = {
@@ -43,6 +46,7 @@ class Network(object):
     self._suffix = args.suffix
     self._optimizer = get_optimizer(args.optimizer, args.lr)
     self._data_dir = os.path.join('data', self._dataname)
+    self._data_attention_folder = os.path.join('data', self._dataname + '_attention')
     self._ckpt_dir = os.path.join('checkpoint', self._dataname, self._suffix)
     self._sample_dir = os.path.join('sample', self._dataname, self._suffix)
     self._log_dir = os.path.join('log', self._dataname, self._suffix)
@@ -81,7 +85,9 @@ class Network(object):
 
   def setup_model(self):
     input_shape = (IMG_WIDTH, IMG_HEIGHT, IMG_CHANNEL)
+    attention_shape = (IMG_WIDTH, IMG_HEIGHT, 1)
     self.image_input = Input(shape=input_shape)
+    self.attention_input = Input(shape=attention_shape)
     # TODO: change following network name, eg. change view to others
     view_names = ['view1', 'view2', 'view3']
     with tf.device('/gpu:0'):
@@ -106,15 +112,16 @@ class Network(object):
       view2 = self.view2_model(self.image_input)
 
     with tf.device('/gpu:1'):
-      self.view3_model = self._nets(
+      self.view3_model = ResNet50_4dim(
         include_top=True,
-        input_shape=input_shape,
+        input_shape=(IMG_WIDTH, IMG_HEIGHT, IMG_CHANNEL + 1),
         get_feature_stage=4,
         name=view_names[2])
       if not self._full_weight_path:
         self._load_weights(self.view3_model, self._view3_weight_path, name=view_names[2])
       self._rename_model_layers(self.view3_model, view_names[2])
-      view3 = self.view3_model(self.image_input)
+      img_attention_concat = Concatenate(axis = -1, name = 'img_attention_concat')([self.image_input, self.attention_input])
+      view3 = self.view3_model(img_attention_concat)
 
       view_concat = Concatenate(axis=-1, name='view_concat')([view1, view2, view3])
 
@@ -143,7 +150,7 @@ class Network(object):
           feat_concat)
 
       final_score = Add(name='predict_fusion')([pre_aggregation, post_aggregation])
-      self.model = Model(inputs=self.image_input, outputs=final_score, name='model')
+      self.model = Model(inputs=[self.image_input, self.attention_input], outputs=final_score, name='model')
 
       view_models = [self.view1_model, self.view2_model, self.view3_model]
 
@@ -203,6 +210,7 @@ class Network(object):
     self.setup_model()
     self.model.compile(
       optimizer=self._optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+    """
     train_datagen = ImageDataGenerator(
       # featurewise_center=True,
       # featurewise_std_normalization=True,
@@ -236,6 +244,34 @@ class Network(object):
         # save_format='jpeg',
         subset='validation',
         interpolation='bilinear'))
+    """
+    train_datagen = ImageDataGeneratorWithAttention(
+      rotation_range=5.0,
+      width_shift_range=0.2,
+      height_shift_range=0.2,
+      brightness_range=(0.8, 1.2),
+      fill_mode='wrap',
+      horizontal_flip=True,
+      vertical_flip=True,
+      validation_split=0.1
+    )
+
+    train_generator = train_datagen.flow(
+        self._data_dir, 
+        self._data_attention_folder,
+        target_size=(224,224),
+        batch_size=self._batch_size,
+        subset='training', 
+        interpolation='bilinear')
+
+    validate_generator = train_datagen.flow(
+        self._data_dir, 
+        self._data_attention_folder,
+        target_size=(224,224),
+        batch_size=self._batch_size,
+        subset='validation', 
+        interpolation='bilinear')
+
     img_count = sum(
       len(y) for y in
       [os.listdir(os.path.join(self._data_dir, x)) for x in os.listdir(self._data_dir)])
